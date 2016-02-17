@@ -12,9 +12,8 @@
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU Lesser General Public License for more details.
  *
- * Copyright 2014 Pentaho Corporation. All rights reserved.
+ * Copyright 2016 Pentaho Corporation. All rights reserved.
  */
-
 package org.pentaho.platform.osgi;
 
 import org.apache.commons.io.FileUtils;
@@ -44,14 +43,15 @@ import java.util.UUID;
  * Created by nbaker on 7/29/14.
  */
 public class KarafBoot implements IPentahoSystemListener {
+  public static final String CLEAN_KARAF_CACHE = "org.pentaho.clean.karaf.cache";
   private Main main;
   Logger logger = LoggerFactory.getLogger( getClass() );
-  private static boolean initialized;
+
   public static final String ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA = "org.osgi.framework.system.packages.extra";
 
   private static final String SYSTEM_PROP_OSX_APP_ROOT_DIR = "osx.app.root.dir";
 
-  private static final String KARAF_DIR = "/system/karaf";
+  protected static final String KARAF_DIR = "/system/karaf";
 
   @Override public boolean startup( IPentahoSession session ) {
 
@@ -66,7 +66,7 @@ public class KarafBoot implements IPentahoSystemListener {
 
         String osxAppRootDir = System.getProperty( SYSTEM_PROP_OSX_APP_ROOT_DIR );
 
-        if ( !StringUtils.isEmpty( osxAppRootDir )  ) {
+        if ( !StringUtils.isEmpty( osxAppRootDir ) ) {
 
           logger.warn( "Given that the system property '" + SYSTEM_PROP_OSX_APP_ROOT_DIR + "' is set, we are in "
               + "a OSX .app context; we'll try looking for Karaf in the app's root dir '" + osxAppRootDir + "' " );
@@ -84,7 +84,8 @@ public class KarafBoot implements IPentahoSystemListener {
       if ( karafDir.exists() ) {
         // This test will let us know whether we need to make our own copy of Karaf before starting (happens in PMR)
         if ( !canOpenConfigPropertiesForEdit( root ) ) {
-          String newDir = new File( karafDir.getParentFile().getParentFile(), karafDir.getName() + "-copy" ).toURI().getPath();
+          String newDir =
+              new File( karafDir.getParentFile().getParentFile(), karafDir.getName() + "-copy" ).toURI().getPath();
           File destDir = new File( newDir );
           FileUtils.copyDirectory( karafDir, destDir );
           root = newDir;
@@ -93,13 +94,16 @@ public class KarafBoot implements IPentahoSystemListener {
 
       configureSystemProperties( solutionRootPath, root );
 
-      expandSystemPackages( root + "/etc/custom.properties" );
+      String customLocation = root + "/etc/custom.properties";
+      expandSystemPackages( customLocation );
 
       // Setup karaf instance configuration
       KarafInstance karafInstance = createAndProcessKarafInstance( root );
 
       //Define any additional karaf instance properties here using karafInstance.registerProperty
       karafInstance.start();
+
+      cleanCacheIfFlagSet( root );
 
       // Wrap the startup of Karaf in a child thread which has explicitly set a bogus authentication. This is
       // work-around and issue with Karaf inheriting the Authenticaiton set on the main system thread due to the
@@ -130,6 +134,47 @@ public class KarafBoot implements IPentahoSystemListener {
     return main != null;
   }
 
+  void cleanCacheIfFlagSet( String root ) throws IOException {
+    String customLocation = root + "/etc/custom.properties";
+
+    // Check to see if the clean cache property is set. If so delete data and recreate before launching.
+    logger.info( "Checking to see if " + CLEAN_KARAF_CACHE + " is enabled" );
+    Properties customProps = new Properties();
+    FileInputStream fileInputStream = null;
+    try {
+      fileInputStream = new FileInputStream( new File( customLocation ) );
+      customProps.load( fileInputStream );
+    } finally {
+      if ( fileInputStream != null ) {
+        IOUtils.closeQuietly( fileInputStream );
+      }
+    }
+    String cleanCache = customProps.getProperty( CLEAN_KARAF_CACHE, "false" );
+    fileInputStream.close();
+    if ( "true".equals( cleanCache ) ) {
+      logger.info( CLEAN_KARAF_CACHE + " is enabled. Karaf data directory will be deleted" );
+
+      // KarafInstance may have changed the data directory
+      String dataDirLocation = System.getProperty( "karaf.data" );
+      File dataDir = new File( dataDirLocation );
+      if ( dataDir.exists() ) {
+        FileUtils.deleteDirectory( dataDir );
+      }
+      customProps.setProperty( CLEAN_KARAF_CACHE, "false" );
+      FileOutputStream out = null;
+      try {
+        out = new FileOutputStream( customLocation );
+        logger.info( "Setting " + CLEAN_KARAF_CACHE + " back to false as this is a one-time action" );
+        customProps.store( out, "Turning of one-time cache clean setting" );
+      } finally {
+        if ( out != null ) {
+          IOUtils.closeQuietly( out );
+        }
+      }
+    }
+
+  }
+
   protected KarafInstance createAndProcessKarafInstance( String root ) throws FileNotFoundException {
     KarafInstance karafInstance = new KarafInstance( root );
     new KarafInstancePortFactory( root + "/etc/KarafPorts.yaml" ).process();
@@ -137,49 +182,59 @@ public class KarafBoot implements IPentahoSystemListener {
   }
 
   protected void configureSystemProperties( String solutionRootPath, String root ) {
-    System.setProperty( "karaf.home", root );
-    System.setProperty( "karaf.base", root );
-    System.setProperty( "karaf.data", root + "/data" );
-    System.setProperty( "karaf.history", root + "/data/history.txt" );
-    System.setProperty( "karaf.instances", root + "/instances" );
-    System.setProperty( "karaf.startLocalConsole", "false" );
-    System.setProperty( "karaf.startRemoteShell", "true" );
-    System.setProperty( "karaf.lock", "false" );
-    System.setProperty( "karaf.etc", root + "/etc"  );
+    fillMissedSystemProperty( "karaf.home", root );
+    fillMissedSystemProperty( "karaf.base", root );
+    fillMissedSystemProperty( "karaf.data", root + "/data" );
+    fillMissedSystemProperty( "karaf.history", root + "/data/history.txt" );
+    fillMissedSystemProperty( "karaf.instances", root + "/instances" );
+    fillMissedSystemProperty( "karaf.startLocalConsole", "false" );
+    fillMissedSystemProperty( "karaf.startRemoteShell", "true" );
+    fillMissedSystemProperty( "karaf.lock", "false" );
+    fillMissedSystemProperty( "karaf.etc", root + "/etc" );
 
     // When running in the PDI-Clients there are separate etc directories so that features can be customized for
     // the particular execution needs (Carte, Spoon, Pan, Kitchen)
     KettleClientEnvironment.ClientType clientType = getClientType();
     String extraKettleEtc = translateToExtraKettleEtc( clientType );
 
-    if( extraKettleEtc != null ){
-      System.setProperty( "felix.fileinstall.dir", root + "/etc"  + "," + root + extraKettleEtc );
+    if ( extraKettleEtc != null ) {
+      System.setProperty( "felix.fileinstall.dir", root + "/etc" + "," + root + extraKettleEtc );
     } else {
       System.setProperty( "felix.fileinstall.dir", root + "/etc" );
     }
 
-
     // Tell others like the pdi-osgi-bridge that there's already a karaf instance running so they don't start
     // their own.
     System.setProperty( "embedded.karaf.mode", "true" );
-
 
     // set the location of the log4j config file, since OSGI won't pick up the one in webapp
     File file = new File( solutionRootPath + "/system/osgi/log4j.xml" );
     if ( file.exists() ) {
       System.setProperty( "log4j.configuration", file.toURI().toString() );
     } else {
-      logger.warn( file.toURI().toString() +" file not exist" );
+      logger.warn( file.toURI().toString() + " file not exist" );
     }
     // Setting ignoreTCL to true such that the OSGI classloader used to initialize log4j will be the
     // same one used when instatiating appenders.
     System.setProperty( "log4j.ignoreTCL", "true" );
   }
 
+  /**
+   * If property with propertyName does not exist, than set property with value propertyValue
+   *
+   * @param propertyName  - property for check
+   * @param propertyValue - value to set if property null
+   */
+  protected void fillMissedSystemProperty( String propertyName, String propertyValue ) {
+    if ( System.getProperty( propertyName ) == null ) {
+      System.setProperty( propertyName, propertyValue );
+    }
+  }
+
   protected String translateToExtraKettleEtc( KettleClientEnvironment.ClientType clientType ) {
     String extraKettleEtc = null;
     if ( clientType != null ) {
-      switch( clientType ) {
+      switch ( clientType ) {
         case SPOON:
           extraKettleEtc = "/etc-spoon";
           break;
@@ -236,7 +291,8 @@ public class KarafBoot implements IPentahoSystemListener {
       inStream = new FileInputStream( customFile );
       properties.load( inStream );
     } catch ( IOException e ) {
-      logger.error( "Not able to expand system.packages.extra properties due to an error loading custom.properties", e );
+      logger
+          .error( "Not able to expand system.packages.extra properties due to an error loading custom.properties", e );
       return;
     } finally {
       IOUtils.closeQuietly( inStream );
@@ -246,21 +302,23 @@ public class KarafBoot implements IPentahoSystemListener {
     System.setProperty( ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA,
         properties.getProperty( ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA ) );
 
-//    FileOutputStream out = null;
-//    try {
-//      out = new FileOutputStream( customFile );
-//      properties.store( out, "expanding osgi properties" );
-//    } catch ( IOException e ) {
-//      logger.error( "Not able to expand system.packages.extra properties due error saving custom.properties", e );
-//    } finally {
-//      IOUtils.closeQuietly( out );
-//    }
+    //    FileOutputStream out = null;
+    //    try {
+    //      out = new FileOutputStream( customFile );
+    //      properties.store( out, "expanding osgi properties" );
+    //    } catch ( IOException e ) {
+    //      logger.error( "Not able to expand system.packages.extra properties due error saving custom.properties", e );
+    //    } finally {
+    //      IOUtils.closeQuietly( out );
+    //    }
 
   }
 
   @Override public void shutdown() {
     try {
-      main.destroy();
+      if ( main != null ) {
+        main.destroy();
+      }
     } catch ( Exception e ) {
       logger.error( "Error stopping Karaf", e );
     }

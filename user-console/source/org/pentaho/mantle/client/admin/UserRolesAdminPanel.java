@@ -83,8 +83,6 @@ public class UserRolesAdminPanel extends SimplePanel {
     mainPanel.add( vSpacer );
 
     mainTabPanel = new PentahoTabPanel();
-    mainTabPanel.setWidth( "715px" );
-    mainTabPanel.setHeight( "510px" );
     mainTabPanel.addTab( Messages.getString( "manageUsers" ), "", false, createUsersPanel() );
     mainTabPanel.addTab( Messages.getString( "manageRoles" ), "", false, createRolesPanel() );
     mainTabPanel.addTab( Messages.getString( "systemRoles" ), "", false, createSystemRolesPanel() );
@@ -126,6 +124,7 @@ public class UserRolesAdminPanel extends SimplePanel {
     usersListBox = new ListBox( true );
     usersListBox.addStyleName( "users-roles-list" );
     availablePanel.add( usersListBox );
+    availablePanel.setCellHeight( usersListBox, "100%" );
     usersListBox.setVisibleItemCount( 20 );
 
     hSpacer = new SimplePanel();
@@ -242,6 +241,7 @@ public class UserRolesAdminPanel extends SimplePanel {
 
     systemRolesListBox = new ListBox( true );
     availablePanel.add( systemRolesListBox );
+    availablePanel.setCellHeight( systemRolesListBox, "100%" );
     systemRolesListBox.setVisibleItemCount( 20 );
     systemRolesListBox.addStyleName( "users-roles-list" );
 
@@ -250,8 +250,10 @@ public class UserRolesAdminPanel extends SimplePanel {
     mainSystemRolesPanel.add( hSpacer );
 
     VerticalPanel detailsPanel = new VerticalPanel();
+    detailsPanel.getElement().setId( "details-panel" );
     mainSystemRolesPanel.add( detailsPanel );
     mainSystemRolesPanel.setCellWidth( detailsPanel, "100%" );
+
 
     hSpacer = new SimplePanel();
     hSpacer.setHeight( "15px" );
@@ -259,6 +261,7 @@ public class UserRolesAdminPanel extends SimplePanel {
 
     systemRolesPermissionsPanel = new PermissionsPanel( systemRolesListBox );
     detailsPanel.add( systemRolesPermissionsPanel );
+    detailsPanel.setCellHeight( systemRolesPermissionsPanel, "100%" );
 
     return mainSystemRolesPanel;
   }
@@ -295,6 +298,7 @@ public class UserRolesAdminPanel extends SimplePanel {
 
     rolesListBox = new ListBox( true );
     availablePanel.add( rolesListBox );
+    availablePanel.setCellHeight( rolesListBox, "100%" );
     rolesListBox.setVisibleItemCount( 20 );
     rolesListBox.addStyleName( "users-roles-list" );
 
@@ -326,6 +330,7 @@ public class UserRolesAdminPanel extends SimplePanel {
     detailsPanel.add( usersLabelPanel );
 
     usersPanel = new HorizontalPanel();
+    usersPanel.getElement().setId( "users-panel" );
     detailsPanel.add( usersPanel );
 
     VerticalPanel availableMembersPanel = new VerticalPanel();
