@@ -23,5 +23,5 @@ package org.pentaho.platform.osgi;
  *
  * @Deprecated This class will be removed in the next major version (6.0). Use KarafBoot instead.
  */
-public class OSGIBoot extends KarafBoot{
+public class OSGIBoot extends KarafBoot {
 }

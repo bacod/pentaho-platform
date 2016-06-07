@@ -13,26 +13,20 @@
  * See the GNU General Public License for more details.
  *
  *
- * Copyright 2006 - 2013 Pentaho Corporation.  All rights reserved.
+ * Copyright 2006 - 2016 Pentaho Corporation.  All rights reserved.
  */
 
 package org.pentaho.platform.security.policy.rolebased;
 
-import com.google.common.collect.HashMultimap;
-import org.apache.commons.collections.map.LRUMap;
-import org.pentaho.platform.api.engine.IAuthorizationAction;
-import org.pentaho.platform.api.engine.security.userroledao.NotFoundException;
-import org.pentaho.platform.api.mt.ITenant;
-import org.pentaho.platform.api.mt.ITenantedPrincipleNameResolver;
-import org.pentaho.platform.engine.core.system.TenantUtils;
-import org.pentaho.platform.repository2.unified.ServerRepositoryPaths;
-import org.pentaho.platform.repository2.unified.jcr.JcrRepositoryFileUtils;
-import org.pentaho.platform.repository2.unified.jcr.JcrStringHelper;
-import org.pentaho.platform.repository2.unified.jcr.JcrTenantUtils;
-import org.pentaho.platform.repository2.unified.jcr.NodeHelper;
-import org.pentaho.platform.repository2.unified.jcr.PentahoJcrConstants;
-import org.pentaho.platform.security.policy.rolebased.messages.Messages;
-import org.springframework.util.Assert;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.Set;
 
 import javax.jcr.NamespaceException;
 import javax.jcr.Node;
@@ -41,21 +35,29 @@ import javax.jcr.PathNotFoundException;
 import javax.jcr.RepositoryException;
 import javax.jcr.Session;
 import javax.jcr.Value;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.ResourceBundle;
-import java.util.Set;
-import java.util.TreeSet;
+
+import org.pentaho.platform.api.engine.IAuthorizationAction;
+import org.pentaho.platform.api.engine.ICacheManager;
+import org.pentaho.platform.api.engine.IPluginManager;
+import org.pentaho.platform.api.engine.IPluginManagerListener;
+import org.pentaho.platform.api.engine.security.userroledao.NotFoundException;
+import org.pentaho.platform.api.mt.ITenant;
+import org.pentaho.platform.api.mt.ITenantedPrincipleNameResolver;
+import org.pentaho.platform.engine.core.system.PentahoSystem;
+import org.pentaho.platform.engine.core.system.TenantUtils;
+import org.pentaho.platform.repository2.unified.ServerRepositoryPaths;
+import org.pentaho.platform.repository2.unified.jcr.JcrStringHelper;
+import org.pentaho.platform.repository2.unified.jcr.JcrTenantUtils;
+import org.pentaho.platform.repository2.unified.jcr.NodeHelper;
+import org.pentaho.platform.repository2.unified.jcr.PentahoJcrConstants;
+import org.pentaho.platform.security.policy.rolebased.messages.Messages;
+import org.springframework.util.Assert;
+
+import com.google.common.collect.HashMultimap;
 
 public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizationPolicyRoleBindingDao {
 
+  private final ICacheManager cacheManager;
   protected ITenantedPrincipleNameResolver tenantedRoleNameUtils;
 
   protected Map<String, List<IAuthorizationAction>> immutableRoleBindings;
@@ -65,30 +67,40 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
 
   protected String superAdminRoleName;
 
-  private List<IAuthorizationAction> authorizationActions = new ArrayList<IAuthorizationAction>();
+  private List<IAuthorizationAction> authorizationActions = Collections.emptyList();
 
   public static final String FOLDER_NAME_AUTHZ = ".authz"; //$NON-NLS-1$
 
   public static final String FOLDER_NAME_ROLEBASED = "roleBased"; //$NON-NLS-1$
 
   public static final String FOLDER_NAME_RUNTIMEROLES = "runtimeRoles"; //$NON-NLS-1$
-  /**
-   * Key: runtime role name; value: list of logical role names
-   */
-  @SuppressWarnings( "unchecked" )
-  protected Map boundLogicalRoleNamesCache = Collections.synchronizedMap( new LRUMap() );
 
-  public AbstractJcrBackedRoleBindingDao(final Map<String, List<IAuthorizationAction>> immutableRoleBindings,
-      final Map<String, List<String>> bootstrapRoleBindings, final String superAdminRoleName,
-      final ITenantedPrincipleNameResolver tenantedRoleNameUtils, final List<IAuthorizationAction> authorizationActions ) {
-    super();
+  private static final String LOGICAL_ROLE_BINDINGS_REGION = "roleBindingCache";
+
+  public AbstractJcrBackedRoleBindingDao() {
+
+    cacheManager = PentahoSystem.getCacheManager( null );
+
+    if ( !cacheManager.cacheEnabled( LOGICAL_ROLE_BINDINGS_REGION ) ) {
+      cacheManager.addCacheRegion( LOGICAL_ROLE_BINDINGS_REGION );
+    }
+
+  }
+
+
+  public AbstractJcrBackedRoleBindingDao( final Map<String, List<IAuthorizationAction>> immutableRoleBindings,
+                                          final Map<String, List<String>> bootstrapRoleBindings,
+                                          final String superAdminRoleName,
+                                          final ITenantedPrincipleNameResolver tenantedRoleNameUtils,
+                                          final List<IAuthorizationAction> authorizationActions ) {
+    this();
     // TODO: replace with IllegalArgumentException
     Assert.notNull( immutableRoleBindings );
     Assert.notNull( bootstrapRoleBindings );
     Assert.notNull( superAdminRoleName );
     Assert.notNull( authorizationActions );
 
-    this.authorizationActions.addAll(authorizationActions);  
+    setAuthorizationActions( authorizationActions );
 
     this.immutableRoleBindings = immutableRoleBindings;
     this.bootstrapRoleBindings = bootstrapRoleBindings;
@@ -104,10 +116,42 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
       immutableRoleBindingNames.put( entry.getKey(), roles );
     }
 
+    // TODO this code can be replaced for 7.0 version by commit
+    // https://github.com/AliaksandrDrebenchuk/pentaho-platform/commit/3adf0df3a337b6dc1b864e74b62143510d0381ee
+    IPluginManager pluginManager = PentahoSystem.get( IPluginManager.class );
+    if ( pluginManager != null ) {
+      pluginManager.addPluginManagerListener( new IPluginManagerListener() {
+
+        private boolean loaded = false;
+
+        @Override
+        public void onReload() {
+          if ( !loaded ) {
+            setAuthorizationActions( PentahoSystem.getAll( IAuthorizationAction.class ) );
+            updateImmutableRoleBindingNames();
+            loaded = true;
+          }
+        }
+      } );
+    }
   }
 
+  public void updateImmutableRoleBindingNames() {
+    for ( List<String> roles : immutableRoleBindingNames.values() ) {
+      roles.clear();
+      for ( final IAuthorizationAction action : authorizationActions ) {
+        roles.add( action.getName() );
+      }
+    }
+  }
+
+  public void setAuthorizationActions( final List<IAuthorizationAction> authorizationActions ) {
+    this.authorizationActions = authorizationActions;
+  }
+
+  @Override
   public List<String> getBoundLogicalRoleNames( Session session, List<String> runtimeRoleNames )
-    throws NamespaceException, RepositoryException {
+      throws NamespaceException, RepositoryException {
     Set<String> boundRoleNames = new HashSet<String>();
     HashMap<ITenant, List<String>> tenantMap = new HashMap<ITenant, List<String>>();
     boolean includeSuperAdminLogicalRoles = false;
@@ -133,8 +177,9 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
     return new ArrayList<String>( boundRoleNames );
   }
 
+  @Override
   public List<String> getBoundLogicalRoleNames( Session session, ITenant tenant, List<String> runtimeRoleNames )
-    throws NamespaceException, RepositoryException {
+      throws NamespaceException, RepositoryException {
     if ( ( tenant == null ) || ( tenant.getId() == null ) ) {
       return getBoundLogicalRoleNames( session, runtimeRoleNames );
     }
@@ -148,8 +193,9 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
     for ( String runtimeRoleName : runtimeRoleNames ) {
       String roleName = tenantedRoleNameUtils.getPrincipleName( runtimeRoleName );
       String roleId = tenantedRoleNameUtils.getPrincipleId( tenant, runtimeRoleName );
-      if ( boundLogicalRoleNamesCache.containsKey( roleId ) ) {
-        cachedBoundLogicalRoleNames.addAll( (Collection<String>) boundLogicalRoleNamesCache.get( roleId ) );
+      Object fromRegionCache = cacheManager.getFromRegionCache( LOGICAL_ROLE_BINDINGS_REGION, roleId );
+      if ( fromRegionCache != null ) {
+        cachedBoundLogicalRoleNames.addAll( (Collection<String>) fromRegionCache );
       } else {
         uncachedRuntimeRoleNames.add( roleName );
       }
@@ -175,8 +221,8 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
       }
     } else {
       for ( String runtimeRoleName : uncachedRuntimeRoleNames ) {
-        if ( NodeHelper.hasNode( runtimeRolesFolderNode, phoNsPrefix , runtimeRoleName ) ) {
-          Node runtimeRoleFolderNode = NodeHelper.getNode( runtimeRolesFolderNode, phoNsPrefix , runtimeRoleName );
+        if ( NodeHelper.hasNode( runtimeRolesFolderNode, phoNsPrefix, runtimeRoleName ) ) {
+          Node runtimeRoleFolderNode = NodeHelper.getNode( runtimeRolesFolderNode, phoNsPrefix, runtimeRoleName );
           if ( runtimeRoleFolderNode.hasProperty( pentahoJcrConstants.getPHO_BOUNDROLES() ) ) {
             Value[] values = runtimeRoleFolderNode.getProperty( pentahoJcrConstants.getPHO_BOUNDROLES() ).getValues();
             String roleId = tenantedRoleNameUtils.getPrincipleId( tenant, runtimeRoleName );
@@ -196,12 +242,18 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
     }
 
     // update cache
-    boundLogicalRoleNamesCache.putAll( boundLogicalRoleNames.asMap() );
+    Map<String, Collection<String>> stringCollectionMap = boundLogicalRoleNames.asMap();
+    for ( Entry<String, Collection<String>> stringCollectionEntry : stringCollectionMap.entrySet() ) {
+      cacheManager.putInRegionCache( LOGICAL_ROLE_BINDINGS_REGION, stringCollectionEntry.getKey(),
+          stringCollectionEntry.getValue() );
+    }
+
     // now add in those runtime roles that have no bindings to the cache
     for ( String runtimeRoleName : uncachedRuntimeRoleNames ) {
       String roleId = tenantedRoleNameUtils.getPrincipleId( tenant, runtimeRoleName );
-      if ( !boundLogicalRoleNamesCache.containsKey( roleId ) ) {
-        boundLogicalRoleNamesCache.put( roleId, Collections.emptyList() );
+
+      if ( cacheManager.getFromRegionCache( LOGICAL_ROLE_BINDINGS_REGION, roleId ) == null ) {
+        cacheManager.putInRegionCache( LOGICAL_ROLE_BINDINGS_REGION, roleId, Collections.emptyList() );
       }
     }
 
@@ -213,7 +265,7 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
   }
 
   public void setRoleBindings( Session session, ITenant tenant, String runtimeRoleName, List<String> logicalRoleNames )
-    throws NamespaceException, RepositoryException {
+      throws NamespaceException, RepositoryException {
     if ( tenant == null ) {
       tenant = JcrTenantUtils.getTenant( runtimeRoleName, false );
       runtimeRoleName = getPrincipalName( runtimeRoleName );
@@ -237,8 +289,9 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
       // no bindings setup yet; install bootstrap bindings; bootstrapRoleBindings will now no longer be
       // consulted
       for ( Map.Entry<String, List<String>> entry : bootstrapRoleBindings.entrySet() ) {
-        JcrRoleAuthorizationPolicyUtils.internalSetBindings( pentahoJcrConstants, runtimeRolesFolderNode, entry.getKey(),
-            entry.getValue(), phoNsPrefix );
+        JcrRoleAuthorizationPolicyUtils
+            .internalSetBindings( pentahoJcrConstants, runtimeRolesFolderNode, entry.getKey(),
+                entry.getValue(), phoNsPrefix );
       }
     }
     if ( !isImmutable( runtimeRoleName ) ) {
@@ -246,14 +299,15 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
           logicalRoleNames, phoNsPrefix );
     } else {
       throw new RuntimeException( Messages.getInstance().getString(
-          "JcrRoleAuthorizationPolicyRoleBindingDao.ERROR_0001_ATTEMPT_MOD_IMMUTABLE", runtimeRoleName ) ); //$NON-NLS-1$
+          "JcrRoleAuthorizationPolicyRoleBindingDao.ERROR_0001_ATTEMPT_MOD_IMMUTABLE",
+          runtimeRoleName ) ); //$NON-NLS-1$
     }
     session.save();
     Assert.isTrue( NodeHelper.hasNode( runtimeRolesFolderNode, phoNsPrefix, runtimeRoleName ) );
 
     // update cache
     String roleId = tenantedRoleNameUtils.getPrincipleId( tenant, runtimeRoleName );
-    boundLogicalRoleNamesCache.put( roleId, logicalRoleNames );
+    cacheManager.putInRegionCache( LOGICAL_ROLE_BINDINGS_REGION, roleId, logicalRoleNames );
   }
 
   private String getPrincipalName( String principalId ) {
@@ -290,7 +344,7 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
         if ( runtimeRoleNode.hasProperty( pentahoJcrConstants.getPHO_BOUNDROLES() ) ) {
           // get clean runtime role name
           String runtimeRoleName = JcrStringHelper.fileNameDecode(
-                  runtimeRoleNode.getName().substring(phoNsPrefix.length())
+              runtimeRoleNode.getName().substring( phoNsPrefix.length() )
           );
           // get logical role names
           List<String> logicalRoleNames = new ArrayList<String>();
@@ -308,14 +362,15 @@ public abstract class AbstractJcrBackedRoleBindingDao implements IRoleAuthorizat
   }
 
   public RoleBindingStruct getRoleBindingStruct( Session session, ITenant tenant, String locale )
-    throws RepositoryException {
-    return new RoleBindingStruct( getMapForLocale( locale ), getRoleBindings( session, tenant ), new HashSet<String>( immutableRoleBindingNames.keySet() ) );
+      throws RepositoryException {
+    return new RoleBindingStruct( getMapForLocale( locale ), getRoleBindings( session, tenant ),
+        new HashSet<String>( immutableRoleBindingNames.keySet() ) );
   }
 
   protected Map<String, String> getMapForLocale( final String localeString ) {
     Map<String, String> map = new HashMap<String, String>();
     for ( IAuthorizationAction authorizationAction : authorizationActions ) {
-      map.put( authorizationAction.getName(), authorizationAction.getLocalizedDisplayName(localeString) );
+      map.put( authorizationAction.getName(), authorizationAction.getLocalizedDisplayName( localeString ) );
     }
     return map;
   }

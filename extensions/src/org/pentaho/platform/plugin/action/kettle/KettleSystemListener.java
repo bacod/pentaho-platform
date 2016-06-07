@@ -12,13 +12,12 @@
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU Lesser General Public License for more details.
  *
- * Copyright (c) 2002-2013 Pentaho Corporation..  All rights reserved.
+ * Copyright (c) 2002-2016 Pentaho Corporation..  All rights reserved.
  */
-
 package org.pentaho.platform.plugin.action.kettle;
 
+import org.apache.commons.lang.StringUtils;
 import org.pentaho.di.cluster.SlaveServer;
-import org.pentaho.di.core.Const;
 import org.pentaho.di.core.KettleEnvironment;
 import org.pentaho.di.core.exception.KettleException;
 import org.pentaho.di.core.logging.KettleLogStore;
@@ -31,6 +30,7 @@ import org.pentaho.platform.api.engine.IPentahoSystemListener;
 import org.pentaho.platform.engine.core.system.PentahoSystem;
 import org.pentaho.platform.plugin.action.messages.Messages;
 import org.pentaho.platform.util.logging.Logger;
+import org.slf4j.LoggerFactory;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 
@@ -51,6 +51,8 @@ public class KettleSystemListener implements IPentahoSystemListener {
    */
   private boolean usePlatformLogFile = true;
 
+  private org.slf4j.Logger logger = LoggerFactory.getLogger( getClass() );
+
   public boolean startup( final IPentahoSession session ) {
 
     if ( usePlatformLogFile ) {
@@ -59,6 +61,15 @@ public class KettleSystemListener implements IPentahoSystemListener {
     }
 
     hookInDataSourceProvider();
+
+    // Default DI_HOME System Property if not set
+    if ( StringUtils.isEmpty( System.getProperty( "DI_HOME" ) ) ) {
+      String defaultKettleHomePath = PentahoSystem.getApplicationContext().getSolutionPath( "system" + File.separator
+          + "kettle" );
+      logger.error( "DI_HOME System Property not properly set. The default location of " + defaultKettleHomePath
+          + " will be used." );
+      System.setProperty( "DI_HOME", defaultKettleHomePath );
+    }
 
     try {
       KettleSystemListener.environmentInit( session );
@@ -77,7 +88,7 @@ public class KettleSystemListener implements IPentahoSystemListener {
         InputStream is = new FileInputStream( slaveServerConfigFile );
         Document document = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse( is );
         Node configNode = XMLHandler.getSubNode( document, SlaveServerConfig.XML_TAG );
-        SlaveServerConfig config = new SlaveServerConfig( new LogChannel( "Slave server config" ), configNode );
+        SlaveServerConfig config = new DIServerConfig( new LogChannel( "Slave server config" ), configNode );
         config.setFilename( slaveServerConfigFile.getAbsolutePath() );
         SlaveServer slaveServer = new SlaveServer();
         config.setSlaveServer( slaveServer );

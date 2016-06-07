@@ -13,9 +13,8 @@
  * See the GNU General Public License for more details.
  *
  *
- * Copyright 2006 - 2013 Pentaho Corporation.  All rights reserved.
+ * Copyright 2006 - 2016 Pentaho Corporation.  All rights reserved.
  */
-
 package org.pentaho.platform.engine.services.actions;
 
 import org.pentaho.platform.api.action.IAction;
@@ -23,60 +22,23 @@ import org.pentaho.platform.api.action.IAction;
 import java.util.ArrayList;
 import java.util.List;
 
-@SuppressWarnings( "nls" )
 public class TestIndexedInputsAction implements IAction {
 
   private List<String> messages = new ArrayList<String>();
   private String scalarMessage;
-  private List<String> otherMessages = new ArrayList<String>();
 
-  {
-    otherMessages.add( "dummy value" );
-    otherMessages.add( "dummy value" );
-    otherMessages.add( "dummy value" );
-    otherMessages.add( "dummy value" );
+  public void setMessages( List<String> messages ) {
+    this.messages = messages;
   }
 
-  //
-  // The "messages" property
-  //
-  public String getMessages( int index ) {
-    return messages.get( index );
-  }
-
-  public List<String> getAllMessages() {
+  public List<String> getMessages() {
     return messages;
   }
 
-  public void setMessages( int index, String message ) {
-    messages.add( message );
-  }
-
-  /**
-   * We must specify a getter method for the indexed "message" property so it will be an conformant JavaBean
-   * property. BeanUtils requires indexed properties to also be JavaBean spec.
-   */
-  public String getMessages() {
-    throw new UnsupportedOperationException( "This should never be called" );
-  }
-
-  //
-  // The "otherMessage" property
-  //
-  public List<String> getOtherMessages() {
-    return otherMessages;
-  }
-
-  public void setOtherMessage( String s ) {
-    throw new UnsupportedOperationException( "This should not be called" );
-  }
 
   public void execute() throws Exception {
   }
 
-  /**
-   * We have only a setter for this property to show that a getter is not required
-   */
   public void setScalarMessage( String s ) {
     scalarMessage = s;
   }

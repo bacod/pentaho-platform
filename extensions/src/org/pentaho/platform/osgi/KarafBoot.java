@@ -18,6 +18,7 @@ package org.pentaho.platform.osgi;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.IOUtils;
+import org.apache.commons.io.filefilter.AbstractFileFilter;
 import org.apache.commons.lang.StringUtils;
 import org.apache.karaf.main.Main;
 import org.pentaho.di.core.KettleClientEnvironment;
@@ -30,11 +31,18 @@ import org.springframework.security.context.SecurityContextHolder;
 import org.springframework.security.providers.UsernamePasswordAuthenticationToken;
 
 import java.io.File;
+import java.io.FileFilter;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.channels.FileLock;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.HashSet;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -47,11 +55,31 @@ public class KarafBoot implements IPentahoSystemListener {
   private Main main;
   Logger logger = LoggerFactory.getLogger( getClass() );
 
+  public static final String PENTAHO_KARAF_ROOT_COPY_DEST_FOLDER = "pentaho.karaf.root.copy.dest.folder";
+
+  public static final String PENTAHO_KARAF_ROOT_TRANSIENT = "pentaho.karaf.root.transient";
+
+  public static final String PENTAHO_KARAF_ROOT_TRANSIENT_DIRECTORY_ATTEMPTS =
+      "pentaho.karaf.root.transient.directory.attempts";
+
+  public static final String PENTAHO_KARAF_ROOT_COPY_FOLDER_SYMLINK_FILES =
+      "pentaho.karaf.root.copy.folder.symlink.files";
+
+  public static final String PENTAHO_KARAF_ROOT_COPY_FOLDER_EXCLUDE_FILES =
+    "pentaho.karaf.root.copy.folder.exclude.files";
+
   public static final String ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA = "org.osgi.framework.system.packages.extra";
+
+  public static final String PENTAHO_KARAF_INSTANCE_RESOLVER_CLASS = "pentaho.karaf.instance.resolver.class";
 
   private static final String SYSTEM_PROP_OSX_APP_ROOT_DIR = "osx.app.root.dir";
 
   protected static final String KARAF_DIR = "/system/karaf";
+  private static FileFilter directoryFilter = new FileFilter() {
+    @Override public boolean accept( File pathname ) {
+      return pathname.isDirectory();
+    }
+  };;
 
   @Override public boolean startup( IPentahoSession session ) {
 
@@ -81,15 +109,97 @@ public class KarafBoot implements IPentahoSystemListener {
 
       String root = karafDir.toURI().getPath();
 
-      if ( karafDir.exists() ) {
-        // This test will let us know whether we need to make our own copy of Karaf before starting (happens in PMR)
-        if ( !canOpenConfigPropertiesForEdit( root ) ) {
-          String newDir =
-              new File( karafDir.getParentFile().getParentFile(), karafDir.getName() + "-copy" ).toURI().getPath();
-          File destDir = new File( newDir );
-          FileUtils.copyDirectory( karafDir, destDir );
-          root = newDir;
+      // See if user specified a karaf folder they would like to use
+      String rootCopyFolderString = System.getProperty( PENTAHO_KARAF_ROOT_COPY_DEST_FOLDER );
+
+      // Use a transient folder (will be deleted on exit) if user says to or cannot open config.properties
+      boolean transientRoot = Boolean.parseBoolean( System.getProperty( PENTAHO_KARAF_ROOT_TRANSIENT, "false" ) );
+      if ( rootCopyFolderString == null && !canOpenConfigPropertiesForEdit( root ) ) {
+        transientRoot = true;
+      }
+
+      final File destDir;
+      if ( transientRoot ) {
+        if ( rootCopyFolderString == null ) {
+          destDir = Files.createTempDirectory( "karaf" ).toFile();
+        } else {
+          int directoryAttempts =
+              Integer.parseInt( System.getProperty( PENTAHO_KARAF_ROOT_TRANSIENT_DIRECTORY_ATTEMPTS, "250" ) );
+          File candidate = new File( rootCopyFolderString );
+          int i = 1;
+          while ( candidate.exists() || !candidate.mkdirs() ) {
+            if ( i > directoryAttempts ) {
+              candidate = Files.createTempDirectory( "karaf" ).toFile();
+              logger.warn( "Unable to create " + rootCopyFolderString + " after " + i + " attempts, using temp dir "
+                  + candidate );
+              break;
+            }
+            candidate = new File( rootCopyFolderString + ( i++ ) );
+          }
+
+          destDir = candidate;
         }
+
+        Runtime.getRuntime().addShutdownHook( new Thread( new Runnable() {
+          @Override public void run() {
+            try {
+              FileUtils.deleteDirectory( destDir );
+            } catch ( IOException e ) {
+              logger.error( "Unable to delete karaf directory " + destDir, e );
+            }
+          }
+        } ) );
+      } else if ( rootCopyFolderString != null ) {
+        destDir = new File( rootCopyFolderString );
+      } else {
+        destDir = null;
+      }
+
+      // Copy karaf (symlinking allowed files/folders if possible)
+      if ( destDir != null && ( transientRoot || !destDir.exists() ) ) {
+        final Set<String> symlinks = new HashSet<>();
+        String symlinkFiles = System.getProperty( PENTAHO_KARAF_ROOT_COPY_FOLDER_SYMLINK_FILES, "lib,system" );
+        if ( symlinkFiles != null ) {
+          for ( String symlink : symlinkFiles.split( "," ) ) {
+            symlinks.add( symlink.trim() );
+          }
+        }
+        final Set<String> excludes = new HashSet<>();
+        String excludeFiles = System.getProperty( PENTAHO_KARAF_ROOT_COPY_FOLDER_EXCLUDE_FILES, "caches" );
+        if ( excludeFiles != null ) {
+          for ( String exclude : excludeFiles.split( "," ) ) {
+            excludes.add( exclude.trim() );
+          }
+        }
+        final Path karafDirPath = Paths.get( karafDir.toURI() );
+        FileUtils.copyDirectory( karafDir, destDir, new AbstractFileFilter() {
+          @Override public boolean accept( File file ) {
+            Path filePath = Paths.get( file.toURI() );
+            String relativePath = karafDirPath.relativize( filePath ).toString();
+            if ( excludes.contains( relativePath ) ) {
+              return false;
+            } else if ( symlinks.contains( relativePath ) ) {
+              File linkFile = new File( destDir, relativePath );
+              linkFile.getParentFile().mkdirs();
+              Path link = Paths.get( linkFile.toURI() );
+              try {
+                // Try to create a symlink and skip the copy if successful
+                if ( Files.createSymbolicLink( link, filePath ) != null ) {
+                  return false;
+                }
+              } catch ( IOException e ) {
+                logger
+                    .error(
+                        "Unable to create symlink " + linkFile.getAbsolutePath() + " -> " + file.getAbsolutePath(), e );
+              }
+            }
+            return true;
+          }
+        } );
+      }
+
+      if ( destDir != null ) {
+        root = destDir.toURI().getPath();
       }
 
       configureSystemProperties( solutionRootPath, root );
@@ -97,13 +207,11 @@ public class KarafBoot implements IPentahoSystemListener {
       String customLocation = root + "/etc/custom.properties";
       expandSystemPackages( customLocation );
 
+      cleanCachesIfFlagSet( root );
+
       // Setup karaf instance configuration
       KarafInstance karafInstance = createAndProcessKarafInstance( root );
 
-      //Define any additional karaf instance properties here using karafInstance.registerProperty
-      karafInstance.start();
-
-      cleanCacheIfFlagSet( root );
 
       // Wrap the startup of Karaf in a child thread which has explicitly set a bogus authentication. This is
       // work-around and issue with Karaf inheriting the Authenticaiton set on the main system thread due to the
@@ -134,7 +242,7 @@ public class KarafBoot implements IPentahoSystemListener {
     return main != null;
   }
 
-  void cleanCacheIfFlagSet( String root ) throws IOException {
+  void cleanCachesIfFlagSet( String root ) throws IOException {
     String customLocation = root + "/etc/custom.properties";
 
     // Check to see if the clean cache property is set. If so delete data and recreate before launching.
@@ -150,16 +258,30 @@ public class KarafBoot implements IPentahoSystemListener {
       }
     }
     String cleanCache = customProps.getProperty( CLEAN_KARAF_CACHE, "false" );
-    fileInputStream.close();
     if ( "true".equals( cleanCache ) ) {
-      logger.info( CLEAN_KARAF_CACHE + " is enabled. Karaf data directory will be deleted" );
+      logger.info( CLEAN_KARAF_CACHE + " is enabled. Karaf data directories will be deleted" );
 
-      // KarafInstance may have changed the data directory
-      String dataDirLocation = System.getProperty( "karaf.data" );
-      File dataDir = new File( dataDirLocation );
-      if ( dataDir.exists() ) {
-        FileUtils.deleteDirectory( dataDir );
+      File cacheParent = new File( root + "/caches" );
+
+      File[] clientCacheFolders = cacheParent.listFiles( directoryFilter );
+      for ( File clientCacheFolder : clientCacheFolders ) {
+        File[] cacheDirs = clientCacheFolder.listFiles( directoryFilter );
+        for ( File cacheDir : cacheDirs ) {
+          File lockFile = new File( cacheDir, ".lock" );
+          FileOutputStream fileOutputStream = new FileOutputStream( lockFile );
+          try {
+            FileLock fileLock = fileOutputStream.getChannel().tryLock();
+            fileLock.release();
+            IOUtils.closeQuietly( fileOutputStream );
+            FileUtils.deleteDirectory( cacheDir );
+          } catch ( Exception ignored ) {
+            // lock active by another program
+          } finally {
+            IOUtils.closeQuietly( fileOutputStream );
+          }
+        }
       }
+
       customProps.setProperty( CLEAN_KARAF_CACHE, "false" );
       FileOutputStream out = null;
       try {
@@ -175,16 +297,18 @@ public class KarafBoot implements IPentahoSystemListener {
 
   }
 
-  protected KarafInstance createAndProcessKarafInstance( String root ) throws FileNotFoundException {
-    KarafInstance karafInstance = new KarafInstance( root );
-    new KarafInstancePortFactory( root + "/etc/KarafPorts.yaml" ).process();
+  protected KarafInstance createAndProcessKarafInstance( String root )
+      throws FileNotFoundException, KarafInstanceResolverException {
+    String clientType = new ExceptionBasedClientTypeProvider().getClientType();
+    KarafInstance karafInstance = new KarafInstance( root, clientType );
+    karafInstance.assignPortsAndCreateCache();
     return karafInstance;
   }
+
 
   protected void configureSystemProperties( String solutionRootPath, String root ) {
     fillMissedSystemProperty( "karaf.home", root );
     fillMissedSystemProperty( "karaf.base", root );
-    fillMissedSystemProperty( "karaf.data", root + "/data" );
     fillMissedSystemProperty( "karaf.history", root + "/data/history.txt" );
     fillMissedSystemProperty( "karaf.instances", root + "/instances" );
     fillMissedSystemProperty( "karaf.startLocalConsole", "false" );
@@ -301,16 +425,6 @@ public class KarafBoot implements IPentahoSystemListener {
     properties = new SystemPackageExtrapolator().expandProperties( properties );
     System.setProperty( ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA,
         properties.getProperty( ORG_OSGI_FRAMEWORK_SYSTEM_PACKAGES_EXTRA ) );
-
-    //    FileOutputStream out = null;
-    //    try {
-    //      out = new FileOutputStream( customFile );
-    //      properties.store( out, "expanding osgi properties" );
-    //    } catch ( IOException e ) {
-    //      logger.error( "Not able to expand system.packages.extra properties due error saving custom.properties", e );
-    //    } finally {
-    //      IOUtils.closeQuietly( out );
-    //    }
 
   }
 

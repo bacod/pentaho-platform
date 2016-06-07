@@ -12,9 +12,8 @@
  * without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  * See the GNU Lesser General Public License for more details.
  *
- * Copyright (c) 2002-2013 Pentaho Corporation..  All rights reserved.
+ * Copyright (c) 2002-2016 Pentaho Corporation..  All rights reserved.
  */
-
 package org.pentaho.platform.plugin.services.connections.sql;
 
 import org.apache.commons.logging.Log;
@@ -22,7 +21,6 @@ import org.apache.commons.logging.LogFactory;
 import org.pentaho.commons.connection.IPeekable;
 import org.pentaho.commons.connection.IPentahoMetaData;
 import org.pentaho.commons.connection.IPentahoResultSet;
-import org.pentaho.commons.connection.memory.MemoryMetaData;
 import org.pentaho.commons.connection.memory.MemoryResultSet;
 import org.pentaho.platform.plugin.services.messages.Messages;
 
@@ -50,7 +48,7 @@ public class SQLResultSet implements IPentahoResultSet, IPeekable {
 
   private static final Log log = LogFactory.getLog( SQLResultSet.class );
 
-  private IPentahoMetaData metadata;
+  private IPentahoMetaData metaData;
 
   /**
    * 
@@ -62,7 +60,7 @@ public class SQLResultSet implements IPentahoResultSet, IPeekable {
   }
 
   public void setMetaData( final IPentahoMetaData metadata ) {
-    this.metadata = metadata;
+    this.metaData = metadata;
   }
 
   /*
@@ -71,9 +69,9 @@ public class SQLResultSet implements IPentahoResultSet, IPeekable {
    * @see org.pentaho.connection.IPentahoResultSet#getMetaData()
    */
   public IPentahoMetaData getMetaData() {
-    if ( metadata == null ) {
+    if ( metaData == null ) {
       try {
-        metadata = new SQLMetaData( nativeResultSet.getMetaData() );
+        metaData = new SQLMetaData( nativeResultSet.getMetaData() );
       } catch ( SQLException e ) {
         // TODO Auto-generated catch block
         SQLResultSet.log.error( Messages.getInstance().getErrorString( "SQLResultSet.ERROR_0004_GET_METADATA" ), e ); //$NON-NLS-1$
@@ -81,7 +79,7 @@ public class SQLResultSet implements IPentahoResultSet, IPeekable {
         throw new RuntimeException( e );
       }
     }
-    return metadata;
+    return metaData;
   }
 
   public Object[] peek() {
@@ -279,12 +277,17 @@ public class SQLResultSet implements IPentahoResultSet, IPeekable {
     return null;
   }
 
+  /**
+   * <b>Attention: </b> It does not clone data!  It is create the shallow copy of metadata! 
+   * It is create the shallow copy of data. You must avoid to use this method. 
+   * @return new instance the {@link MemoryResultSet} with same metadata
+   */
   public IPentahoResultSet memoryCopy() {
     try {
-      IPentahoMetaData meta = getMetaData();
-      Object[][] columnHeaders = meta.getColumnHeaders();
-      MemoryMetaData cachedMetaData = new MemoryMetaData( columnHeaders, null );
-      MemoryResultSet cachedResultSet = new MemoryResultSet( cachedMetaData );
+      // we have the {@link #setMetaData(IPentahoMetaData)} so the metadata can be any 
+      // class which implements IPentahoMetaData, we should not lost data from metadata, so we must use metadata from original result set,
+      // or clone metadata. The IPentahoMetaData does not implement Cloneable and we unable to clone data. So keep the shallow copy of metadata.
+      MemoryResultSet cachedResultSet = new MemoryResultSet( getMetaData() );
       Object[] rowObjects = next();
       while ( rowObjects != null ) {
         cachedResultSet.addRow( rowObjects );

@@ -62,7 +62,7 @@
 
   <property name="user-console.tmp.dir" value="${basedir}/temp" />
   <property name="tomcat.major.version" value="8"/>
-  <property name="tomcat.minor.version" value="0.24"/>
+  <property name="tomcat.minor.version" value="0.33"/>
   <property name="tomcat.version" value="${tomcat.major.version}.${tomcat.minor.version}"/>
   <property name="tomcat.dir" value="${subfloor.resources.dir}/apache-tomcat-${tomcat.version}" description="Directory where tomcat is deployed"/>
   <property name="third-party.dir" value="${subfloor.resources.dir}/third-party" description="Directory where 3rd party tools are included in the platform assemblies" />
@@ -152,6 +152,57 @@
   <target name="package"
           depends="package-zip"
           description="Packages an previously assembled archive-based BIServer community edition" />
+
+	  <target name="package-merged-server"
+	          depends="package-merged-zip"
+	          description="Packages an archive-based Pentaho Server CE">
+	  </target>
+
+	  <target name="package-merged-zip">
+	    <zip destfile="${dist.dir}/biserver-merged-ce-${project.revision}.zip">
+	      <zipfileset dir="${stage.dir}" filemode="755">
+	        <include name="**/*.sh" />
+	        <include name="**/JavaApplicationStub" />
+	        <include name="**/*.command" />
+	      </zipfileset>
+	      <zipfileset dir="${stage.dir}">
+	        <exclude name="**/*.sh" />
+	        <exclude name="**/JavaApplicationStub" />
+	        <exclude name="**/*.command" />
+	      </zipfileset>
+	    </zip>
+	  </target>	
+
+	<!-- ===================================================================
+	       target: package-manual-merged-server
+
+	       Create the biserver-merged-manual-ce-${project.revision}.zip
+	      =================================================================== -->
+	<target name="package-manual-merged-server" depends="war-pentaho, zip-pentaho-data, zip-pentaho-solutions, resolve-oss-licenses">
+	    <zip destfile="${dist.dir}/biserver-merged-manual-ce-${project.revision}.zip">
+	        <zipfileset dir="${dist.dir}" filemode="755" prefix="">
+	          <include name="**/MANIFEST.MF" />
+	          <include name="**/pentaho-data.zip" />
+	          <include name="**/pentaho-solutions.zip" />
+ 	          <include name="**/pentaho.war" />
+	          <include name="**/pentaho-style.war" />
+	        </zipfileset>
+	    	<zipfileset src="${bin.dir}/oss-licenses.zip" includes="PentahoBIPlatform_OSS_Licenses.html,PentahoDataIntegration_OSS_Licenses.html" prefix=""/>
+	    </zip>
+		<delete>
+			<fileset dir="${dist.dir}">
+				<include name="**/MANIFEST.MF" />
+			    <include name="**/pentaho-data.zip" />
+			    <include name="**/pentaho-solutions.zip" />
+         	    <include name="**/license-installer.zip" />
+			    <include name="**/jdbc-distribution-utility.zip" />
+				<include name="**/pentaho.war" />
+				<include name="**/pentaho-style.war" />
+			</fileset>
+		</delete>
+	</target>
+	
+
 
   <!--=======================================================================
 	      target: tomcat.download-check
